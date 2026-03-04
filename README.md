@@ -1,6 +1,6 @@
 # TecTex
 
-I started **TecTex** because I wanted to make a genuinely good resume, and I realized LaTeX gives the best results for clean, professional formatting.
+I started **TecTex** because I wanted to make a genuinely good resume, and I realised LaTeX gives the best results for clean, professional formatting.
 
 The problem: LaTeX tools can feel annoying for quick resume edits.
 
@@ -8,6 +8,8 @@ So I built this as a local-first desktop app where I can:
 - edit TeX directly,
 - preview PDF quickly,
 - use a structured resume editor that detects sections from existing TeX and prevents easy formatting breakage.
+
+It’s still a work in progress, and I’ll keep improving it over time until it reaches my vision: an all-in-one resume editor with LaTeX at its core.
 
 ## What TecTex Does
 
