@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TeX Studio Local</title>
+  <link rel="stylesheet" href="/local_app/styles.css">
+</head>
+<body>
+  <div class="page-bg" aria-hidden="true"></div>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand">
+        <h1>TeX Studio Local</h1>
+        <p>Local editor with PDF preview and export</p>
+      </div>
+      <div class="toolbar">
+        <button id="newBtn" class="btn btn-ghost" type="button">New</button>
+        <button id="openBtn" class="btn btn-ghost" type="button">Open TeX</button>
+        <button id="saveTexBtn" class="btn btn-ghost" type="button">Save .tex</button>
+        <button id="editResumeBtn" class="btn btn-ghost" type="button">Edit Resume</button>
+        <button id="previewBtn" class="btn btn-accent" type="button">Preview PDF</button>
+        <button id="savePdfBtn" class="btn btn-warm" type="button">Save As PDF</button>
+        <label class="engine">
+          <span>Engine</span>
+          <select id="engineSelect">
+            <option value="auto">Auto</option>
+            <option value="tectonic">tectonic</option>
+            <option value="pdflatex">pdflatex</option>
+            <option value="xelatex">xelatex</option>
+            <option value="lualatex">lualatex</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="panel editor-panel">
+        <div class="panel-header">
+          <h2>Editor</h2>
+          <div class="panel-meta" id="fileLabel">Untitled.tex</div>
+        </div>
+        <textarea id="editor" spellcheck="false"></textarea>
+      </section>
+
+      <section class="panel preview-panel">
+        <div class="panel-header">
+          <h2>PDF Preview</h2>
+          <div class="panel-meta" id="previewMode">Not generated</div>
+        </div>
+        <iframe id="pdfFrame" title="PDF Preview"></iframe>
+      </section>
+    </main>
+
+    <section class="panel log-panel">
+      <div class="panel-header">
+        <h2>Build Log</h2>
+      </div>
+      <pre id="logOutput">Ready.</pre>
+    </section>
+
+    <footer class="statusbar">
+      <span id="statusText">Ready.</span>
+      <span id="statusHint">Ctrl+Enter: preview, Ctrl+S: save .tex</span>
+    </footer>
+  </div>
+
+  <input id="fileInput" type="file" accept=".tex,.txt,text/plain" hidden>
+
+  <div id="resumeModal" class="resume-modal" aria-hidden="true">
+    <div class="resume-modal-card" role="dialog" aria-modal="true" aria-labelledby="resumeModalTitle">
+      <div class="resume-modal-head">
+        <h3 id="resumeModalTitle">Structured Resume Editor</h3>
+        <button id="resumeCloseBtn" class="btn btn-ghost" type="button">Close</button>
+      </div>
+
+      <p class="resume-modal-note">
+        Use this form to safely generate valid TeX. Required fields are validated and special
+        characters are escaped automatically.
+      </p>
+
+      <div class="resume-scroll">
+        <section class="rb-section">
+          <h4>Profile</h4>
+          <div class="rb-grid-two">
+            <label>Full Name* <input id="rbName" type="text" maxlength="120"></label>
+            <label>Headline / Role* <input id="rbHeadline" type="text" maxlength="140"></label>
+            <label>Location <input id="rbLocation" type="text" maxlength="120"></label>
+            <label>Email <input id="rbEmail" type="email" maxlength="160"></label>
+            <label>Phone <input id="rbPhone" type="text" maxlength="80"></label>
+            <label>Website / LinkedIn <input id="rbWebsite" type="text" maxlength="180"></label>
+          </div>
+          <label>Summary
+            <textarea id="rbSummary" rows="4" placeholder="Short professional summary..."></textarea>
+          </label>
+        </section>
+
+        <section class="rb-section">
+          <div class="rb-section-head">
+            <h4>Experience</h4>
+            <button id="rbAddExperience" type="button" class="btn btn-ghost">+ Add Experience</button>
+          </div>
+          <div id="rbExperienceList" class="rb-list"></div>
+        </section>
+
+        <section class="rb-section">
+          <div class="rb-section-head">
+            <h4>Education</h4>
+            <button id="rbAddEducation" type="button" class="btn btn-ghost">+ Add Education</button>
+          </div>
+          <div id="rbEducationList" class="rb-list"></div>
+        </section>
+
+        <section class="rb-section">
+          <div class="rb-section-head">
+            <h4>Projects</h4>
+            <button id="rbAddProject" type="button" class="btn btn-ghost">+ Add Project</button>
+          </div>
+          <div id="rbProjectList" class="rb-list"></div>
+        </section>
+
+        <section class="rb-section">
+          <h4>Skills</h4>
+          <div class="rb-grid-two">
+            <label>Languages <input id="rbSkillsLanguages" type="text" placeholder="Python, SQL, JavaScript"></label>
+            <label>Tools <input id="rbSkillsTools" type="text" placeholder="Git, Docker, Azure"></label>
+          </div>
+          <label>Other Skills
+            <textarea id="rbSkillsOther" rows="3" placeholder="Any additional skills"></textarea>
+          </label>
+        </section>
+      </div>
+
+      <div id="rbError" class="rb-error" aria-live="polite"></div>
+
+      <div class="resume-modal-actions">
+        <button id="resumeCancelBtn" type="button" class="btn btn-ghost">Cancel</button>
+        <button id="resumeApplyBtn" type="button" class="btn btn-accent">Apply to Editor</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/local_app/app.js"></script>
+</body>
+</html>
