@@ -355,6 +355,15 @@ body {
   gap: 8px;
 }
 
+.rb-tag {
+  font-size: 0.72rem;
+  color: #34576b;
+  background: #e6f1f8;
+  border: 1px solid rgba(30, 64, 89, 0.18);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
 .rb-grid-two {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -421,6 +430,24 @@ body {
   font-size: 0.78rem;
 }
 
+.rd-grid {
+  display: grid;
+  grid-template-columns: minmax(170px, 230px) 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.rd-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rd-check input {
+  width: auto;
+  margin: 0;
+}
+
 .rb-error {
   min-height: 1.2rem;
   font-size: 0.82rem;
@@ -449,6 +476,10 @@ body {
   }
 
   .rb-grid-two {
+    grid-template-columns: 1fr;
+  }
+
+  .rd-grid {
     grid-template-columns: 1fr;
   }
 }

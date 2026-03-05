@@ -70,64 +70,31 @@
   <div id="resumeModal" class="resume-modal" aria-hidden="true">
     <div class="resume-modal-card" role="dialog" aria-modal="true" aria-labelledby="resumeModalTitle">
       <div class="resume-modal-head">
-        <h3 id="resumeModalTitle">Structured Resume Editor</h3>
+        <h3 id="resumeModalTitle">Dynamic Resume Editor</h3>
         <button id="resumeCloseBtn" class="btn btn-ghost" type="button">Close</button>
       </div>
 
       <p class="resume-modal-note">
-        Use this form to safely generate valid TeX. Required fields are validated and special
-        characters are escaped automatically.
+        Detected directly from your TeX. Edit header and sections without forcing a preset template.
       </p>
 
       <div class="resume-scroll">
         <section class="rb-section">
-          <h4>Profile</h4>
-          <div class="rb-grid-two">
-            <label>Full Name* <input id="rbName" type="text" maxlength="120"></label>
-            <label>Headline / Role* <input id="rbHeadline" type="text" maxlength="140"></label>
-            <label>Location <input id="rbLocation" type="text" maxlength="120"></label>
-            <label>Email <input id="rbEmail" type="email" maxlength="160"></label>
-            <label>Phone <input id="rbPhone" type="text" maxlength="80"></label>
-            <label>Website / LinkedIn <input id="rbWebsite" type="text" maxlength="180"></label>
+          <div class="rb-section-head">
+            <h4>Header Block</h4>
+            <span class="rb-tag">Optional</span>
           </div>
-          <label>Summary
-            <textarea id="rbSummary" rows="4" placeholder="Short professional summary..."></textarea>
+          <label>Content between \begin{center}...\end{center} (raw TeX)
+            <textarea id="rdHeaderBlock" rows="6" placeholder="\begin{center} ... \end{center}"></textarea>
           </label>
         </section>
 
         <section class="rb-section">
           <div class="rb-section-head">
-            <h4>Experience</h4>
-            <button id="rbAddExperience" type="button" class="btn btn-ghost">+ Add Experience</button>
+            <h4>Detected Sections</h4>
+            <button id="rdAddSection" type="button" class="btn btn-ghost">+ Add Section</button>
           </div>
-          <div id="rbExperienceList" class="rb-list"></div>
-        </section>
-
-        <section class="rb-section">
-          <div class="rb-section-head">
-            <h4>Education</h4>
-            <button id="rbAddEducation" type="button" class="btn btn-ghost">+ Add Education</button>
-          </div>
-          <div id="rbEducationList" class="rb-list"></div>
-        </section>
-
-        <section class="rb-section">
-          <div class="rb-section-head">
-            <h4>Projects</h4>
-            <button id="rbAddProject" type="button" class="btn btn-ghost">+ Add Project</button>
-          </div>
-          <div id="rbProjectList" class="rb-list"></div>
-        </section>
-
-        <section class="rb-section">
-          <h4>Skills</h4>
-          <div class="rb-grid-two">
-            <label>Languages <input id="rbSkillsLanguages" type="text" placeholder="Python, SQL, JavaScript"></label>
-            <label>Tools <input id="rbSkillsTools" type="text" placeholder="Git, Docker, Azure"></label>
-          </div>
-          <label>Other Skills
-            <textarea id="rbSkillsOther" rows="3" placeholder="Any additional skills"></textarea>
-          </label>
+          <div id="rdSections" class="rb-list"></div>
         </section>
       </div>
 
