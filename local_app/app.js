@@ -260,6 +260,12 @@ const preambleSection = $("preambleSection");
 const logPanel = $("logPanel");
 const logToggle = $("logToggle");
 const logBadge = $("logBadge");
+const logSummary = $("logSummary");
+const askAiBtn = $("askAiBtn");
+const aiPanel = $("aiPanel");
+const aiContent = $("aiContent");
+const aiApplyBtn = $("aiApplyBtn");
+const aiDismissBtn = $("aiDismissBtn");
 
 // Template modal
 const templateModal = $("templateModal");
@@ -282,6 +288,17 @@ const state = {
   newestCompileRequestId: 0,
   activeCompileRequestId: 0,
   newlineStyle: "\n",
+  compileErrorContext: {
+    source: "",
+    log: "",
+    error: "",
+  },
+  ai: {
+    available: false,
+    checked: false,
+    busy: false,
+    fixedSource: "",
+  },
   builder: {
     builderDirty: false,
     lastParsedSourceHash: "",
@@ -302,7 +319,6 @@ function createEditor() {
     if (update.docChanged) {
       clearCompileMarkers();
       markDirty(true);
-      scheduleAutoSave();
       scheduleLiveCompile();
       updateWordCount();
     }
@@ -414,6 +430,24 @@ function setStatus(text, tone = "ok") {
 function setLog(text) {
   logOutput.textContent = text && text.trim() ? text : "Ready.";
   logOutput.scrollTop = 0;
+}
+
+function setLogSummary(text) {
+  if (!logSummary) return;
+  const summary = String(text || "").trim();
+  logSummary.hidden = !summary;
+  logSummary.textContent = summary;
+}
+
+function clearCompileErrorUi() {
+  setLogSummary("");
+  showLogBadge(false);
+  if (askAiBtn) askAiBtn.hidden = true;
+  if (askAiBtn) askAiBtn.disabled = false;
+  if (aiPanel) aiPanel.hidden = true;
+  if (aiApplyBtn) aiApplyBtn.hidden = true;
+  state.ai.fixedSource = "";
+  state.compileErrorContext = { source: "", log: "", error: "" };
 }
 
 function appendLog(text) {
@@ -542,26 +576,43 @@ function saveTex() {
 
 function loadNewDocument() {
   if ((state.dirty || state.builder.builderDirty) && !window.confirm("Discard unsaved changes?")) return;
+
+  // Cancel any in-flight compile
+  state.activeCompileRequestId = ++state.newestCompileRequestId;
+  if (state.compileTimer) { clearTimeout(state.compileTimer); state.compileTimer = null; }
+  if (state.builder.liveBuilderCompileTimer) { clearTimeout(state.builder.liveBuilderCompileTimer); state.builder.liveBuilderCompileTimer = null; }
+
   setEditorContent("");
   state.fileName = "Untitled.tex";
   state.resumeDoc = null;
   state.newlineStyle = "\n";
+  state.lastPdfBase64 = "";
   resetBuilderTracking();
   clearCompileMarkers();
   markDirty(false);
   setLog("Ready.");
+  clearCompileErrorUi();
   collapseLog();
-  showLogBadge(false);
   previewMode.textContent = "Not generated";
   setStatus("New document created.", "ok");
   updateWordCount();
-  clearAutoSave();
+
+  // Clear the preview iframe
+  if (state.pdfUrl) { URL.revokeObjectURL(state.pdfUrl); state.pdfUrl = ""; }
+  pdfFrame.src = "about:blank";
+
   switchTab("source", { skipBuilderSync: true });
 }
 
 function handleOpenFile(file) {
   if (!file) return;
   if ((state.dirty || state.builder.builderDirty) && !window.confirm("Discard unsaved changes and open selected file?")) return;
+
+  // Cancel any in-flight compile so it doesn't overwrite the new file's preview
+  state.activeCompileRequestId = ++state.newestCompileRequestId;
+  if (state.compileTimer) { clearTimeout(state.compileTimer); state.compileTimer = null; }
+  if (state.builder.liveBuilderCompileTimer) { clearTimeout(state.builder.liveBuilderCompileTimer); state.builder.liveBuilderCompileTimer = null; }
+
   const reader = new FileReader();
   reader.onload = () => {
     const content = String(reader.result || "");
@@ -570,12 +621,14 @@ function handleOpenFile(file) {
     resetBuilderTracking();
     clearCompileMarkers();
     state.fileName = file.name || "Untitled.tex";
+    state.resumeDoc = null;
+    state.lastPdfBase64 = "";
     markDirty(false);
-    previewMode.textContent = "Not generated";
+    previewMode.textContent = "Compiling…";
     setStatus(`Loaded ${state.fileName}.`, "ok");
     setLog("Ready.");
+    clearCompileErrorUi();
     collapseLog();
-    showLogBadge(false);
     updateWordCount();
 
     // Auto-detect resume and offer to open in Resume Builder
@@ -585,50 +638,23 @@ function handleOpenFile(file) {
     } else {
       switchTab("source", { skipBuilderSync: true });
     }
+
+    // Always compile the newly opened file so preview updates immediately
+    // Cancel any pending live compile timer triggered by setEditorContent above
+    if (state.compileTimer) { clearTimeout(state.compileTimer); state.compileTimer = null; }
+    if (content.trim() && hasLikelyTex(content)) {
+      requestPdf({ download: false, quiet: false, sourceText: content });
+    }
   };
   reader.onerror = () => setStatus("Failed to read selected file.", "error");
   reader.readAsText(file, "utf-8");
 }
 
-// ─── Auto-Save (localStorage) ───
-function scheduleAutoSave() {
-  if (state._autoSaveTimer) clearTimeout(state._autoSaveTimer);
-  state._autoSaveTimer = setTimeout(doAutoSave, 2000);
-}
-
-function doAutoSave() {
-  try {
-    localStorage.setItem(AUTOSAVE_KEY, getEditorContent());
-    localStorage.setItem(AUTOSAVE_NAME_KEY, state.fileName);
-  } catch (e) { /* quota exceeded, ignore */ }
-}
-
-function restoreAutoSave() {
-  try {
-    const saved = localStorage.getItem(AUTOSAVE_KEY);
-    const name = localStorage.getItem(AUTOSAVE_NAME_KEY);
-    if (saved && saved.trim()) {
-      state.newlineStyle = detectNewlineStyle(saved);
-      setEditorContent(saved);
-      resetBuilderTracking();
-      clearCompileMarkers();
-      state.fileName = name || "Untitled.tex";
-      markDirty(false);
-      updateFileLabel();
-      setStatus("Restored auto-saved draft.", "ok");
-      updateWordCount();
-      return true;
-    }
-  } catch (e) { /* ignore */ }
-  return false;
-}
-
-function clearAutoSave() {
-  try {
-    localStorage.removeItem(AUTOSAVE_KEY);
-    localStorage.removeItem(AUTOSAVE_NAME_KEY);
-  } catch (e) { /* ignore */ }
-}
+// ─── Auto-Save (disabled) ───
+function scheduleAutoSave() { /* disabled */ }
+function doAutoSave() { /* disabled */ }
+function restoreAutoSave() { return false; }
+function clearAutoSave() { /* disabled */ }
 
 // ─── Live Compile ───
 function scheduleLiveCompile() {
@@ -658,41 +684,299 @@ function scheduleBuilderLiveCompile() {
   }, LIVE_COMPILE_DELAY);
 }
 
+function extractLineNumber(text) {
+  const source = String(text || "");
+  const patterns = [
+    /l\.(\d+)/i,
+    /\bline\s+(\d+)\b/i,
+    /:(\d+)(?::\d+)?\b/,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(source);
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return 0;
+}
+
+function cleanCompileMessage(message) {
+  return String(message || "")
+    .replace(/^!+\s*/, "")
+    .replace(/^(?:LaTeX|Package [^:]+)\s+Error:\s*/i, "")
+    .replace(/^\s*(?:error|warning):\s*/i, "")
+    .trim();
+}
+
+function normalizeCompileSummary(message) {
+  const cleaned = cleanCompileMessage(message);
+  if (!cleaned) return "Compilation failed.";
+
+  if (/missing\s*}\s*inserted|extra }, or forgotten \\endgroup|runaway argument/i.test(cleaned)) {
+    return "Missing }";
+  }
+  if (/undefined control sequence/i.test(cleaned)) {
+    return "Undefined control sequence";
+  }
+  if (/paragraph ended before .* was complete/i.test(cleaned)) {
+    return "Command argument ended early (likely missing })";
+  }
+  const missingFile = /file [`']([^`']+)[`'] not found/i.exec(cleaned);
+  if (missingFile) {
+    return `Missing package/file: ${missingFile[1]}`;
+  }
+  if (/emergency stop/i.test(cleaned)) {
+    return "Compilation stopped after an earlier LaTeX error";
+  }
+  return cleaned.replace(/\s+/g, " ").trim();
+}
+
 function parseCompileMarkers(logText) {
   const text = normalizeNewlines(logText);
   if (!text.trim()) return [];
   const rows = text.split("\n");
   const markers = [];
-  const linePatterns = [
-    /l\.(\d+)/i,
-    /\bline\s+(\d+)\b/i,
-    /:(\d+)(?::\d+)?\b/,
-  ];
+  const seen = new Set();
+  const markerLimit = 40;
 
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    let line = 0;
-    for (const pattern of linePatterns) {
-      const match = pattern.exec(row);
-      if (match) {
-        line = Number(match[1]);
-        break;
-      }
+  const pushMarker = (line, message, severity = "error") => {
+    const lineNo = Number(line);
+    if (!Number.isFinite(lineNo) || lineNo <= 0) return;
+    const cleanMessage = normalizeCompileSummary(message || "Compilation issue");
+    const tone = severity === "warn" ? "warn" : "error";
+    const key = `${lineNo}|${tone}|${cleanMessage}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    markers.push({ line: lineNo, message: cleanMessage, severity: tone });
+  };
+
+  for (let i = 0; i < rows.length && markers.length < markerLimit; i++) {
+    const raw = rows[i];
+    const row = raw.trim();
+    if (!row) continue;
+
+    // Classic LaTeX errors:
+    // ! LaTeX Error: ...
+    // l.42 ...
+    if (/^!/.test(row)) {
+      const message = cleanCompileMessage(row);
+      const line = extractLineNumber(rows[i + 1]) || extractLineNumber(rows[i + 2]) || extractLineNumber(row);
+      pushMarker(line, message || rows[i + 1] || "Compilation issue", "error");
+      continue;
     }
-    if (!line) continue;
 
+    // Tectonic/rust style errors and warnings:
+    // error: main.tex:42:5: ...
+    // warning: main.tex:42:5: ...
+    const rustStyle = /^(error|warning):\s+[^:\n]+:(\d+)(?::\d+)?:\s*(.+)$/i.exec(row);
+    if (rustStyle) {
+      const severity = rustStyle[1].toLowerCase() === "warning" ? "warn" : "error";
+      pushMarker(Number(rustStyle[2]), rustStyle[3], severity);
+      continue;
+    }
+
+    const hasErrorWord = /\b(error|warning|undefined|missing|runaway|fatal)\b/i.test(row);
+    if (!hasErrorWord) continue;
+    const line = extractLineNumber(row);
+    if (!line) continue;
     const severity = /\bwarn(?:ing)?\b/i.test(row) ? "warn" : "error";
-    const message = row.trim() || (rows[i + 1] || "").trim() || "Compilation issue";
-    markers.push({ line, message, severity });
-    if (markers.length >= 40) break;
+    pushMarker(line, row, severity);
   }
-  return markers;
+
+  return markers.slice(0, markerLimit);
 }
 
 function updateCompileMarkersFromLog(logText) {
   const markers = parseCompileMarkers(logText);
   if (markers.length > 0) setCompileMarkers(markers);
   else clearCompileMarkers();
+}
+
+function extractPrimaryCompileIssue(logText, fallbackMessage = "Compilation failed.") {
+  const markers = parseCompileMarkers(logText);
+  const firstError = markers.find((item) => item.severity === "error") || markers[0];
+  if (firstError) {
+    return {
+      line: Number(firstError.line) || 0,
+      message: normalizeCompileSummary(firstError.message || fallbackMessage),
+    };
+  }
+
+  const rows = normalizeNewlines(logText).split("\n");
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i].trim();
+    if (!row) continue;
+    if (!/^!/.test(row) && !/\berror\b/i.test(row)) continue;
+    const line = extractLineNumber(rows[i + 1]) || extractLineNumber(rows[i + 2]) || extractLineNumber(row);
+    const message = normalizeCompileSummary(row);
+    return { line, message };
+  }
+
+  return {
+    line: 0,
+    message: normalizeCompileSummary(fallbackMessage),
+  };
+}
+
+function formatIssueForStatus(issue) {
+  const message = normalizeCompileSummary(issue && issue.message ? issue.message : "Compilation failed.");
+  const line = issue && issue.line ? Number(issue.line) : 0;
+  return line > 0 ? `${message} on line ${line}` : message;
+}
+
+async function ensureAiAvailable() {
+  if (state.ai.checked) return state.ai.available;
+  try {
+    const response = await fetch("/api/ai-status");
+    if (response.ok) {
+      const data = await response.json();
+      state.ai.available = Boolean(data && data.ok && data.available);
+    } else {
+      state.ai.available = false;
+    }
+  } catch (error) {
+    state.ai.available = false;
+  }
+  state.ai.checked = true;
+  return state.ai.available;
+}
+
+function showAskAiButton(show) {
+  if (!askAiBtn) return;
+  askAiBtn.hidden = !(show && state.ai.available);
+}
+
+function renderAiLoading() {
+  if (!aiPanel || !aiContent) return;
+  aiPanel.hidden = false;
+  aiContent.innerHTML = `
+    <div class="ai-loading">
+      <div class="spinner"></div>
+      <span>Asking Gemini…</span>
+    </div>
+  `;
+  if (aiApplyBtn) aiApplyBtn.hidden = true;
+}
+
+function renderAiError(message) {
+  if (!aiPanel || !aiContent) return;
+  aiPanel.hidden = false;
+  aiContent.innerHTML = `<div class="ai-error">${htmlEscape(message || "AI request failed.")}</div>`;
+  if (aiApplyBtn) aiApplyBtn.hidden = true;
+  state.ai.fixedSource = "";
+}
+
+function renderAiResult(payload) {
+  if (!aiPanel || !aiContent) return;
+  const suggestion = String(payload.suggestion || payload.diagnosis || payload.raw || "No diagnosis returned.").trim();
+  const fixedSource = String(payload.fixed_source || "").trim();
+  state.ai.fixedSource = fixedSource;
+  aiPanel.hidden = false;
+
+  const fixedHtml = fixedSource
+    ? `
+      <p class="ai-section-title">Suggested TeX</p>
+      <pre class="ai-code">${htmlEscape(fixedSource)}</pre>
+    `
+    : "";
+
+  aiContent.innerHTML = `
+    <p class="ai-section-title">Diagnosis</p>
+    <div class="ai-diagnosis">${htmlEscape(suggestion || "No diagnosis returned.")}</div>
+    ${fixedHtml}
+  `;
+  if (aiApplyBtn) aiApplyBtn.hidden = !fixedSource;
+}
+
+async function askAiForHelp() {
+  if (state.ai.busy) return;
+  const source = state.compileErrorContext.source || getEditorContent();
+  const logText = state.compileErrorContext.log || logOutput.textContent || "";
+  const errorSummary = state.compileErrorContext.error || "";
+
+  if (!source.trim()) {
+    setStatus("No TeX source available for AI diagnosis.", "warn");
+    return;
+  }
+
+  const aiEnabled = await ensureAiAvailable();
+  if (!aiEnabled) {
+    setStatus("AI help is not configured. Start with --gemini-key or GEMINI_API_KEY.", "warn");
+    return;
+  }
+
+  state.ai.busy = true;
+  if (askAiBtn) askAiBtn.disabled = true;
+  renderAiLoading();
+  expandLog();
+
+  try {
+    const response = await fetch("/api/ai-help", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source,
+        log: logText,
+        error: errorSummary,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || `AI request failed (${response.status}).`);
+    }
+    renderAiResult(data);
+    setStatus("AI diagnosis ready.", "ok");
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    renderAiError(message);
+    setStatus(`AI help failed: ${message}`, "error");
+  } finally {
+    state.ai.busy = false;
+    if (askAiBtn) askAiBtn.disabled = false;
+  }
+}
+
+function applyAiFix() {
+  const fixedSource = String(state.ai.fixedSource || "").trim();
+  if (!fixedSource) return;
+  if (!window.confirm("Replace the current editor content with the AI fix?")) return;
+
+  const normalized = restoreNewlineStyle(fixedSource, state.newlineStyle);
+  if (state.activeTab === "builder") {
+    switchTab("source", { skipBuilderSync: true });
+  }
+  setEditorContent(normalized);
+  markDirty(true);
+  updateWordCount();
+  setStatus("Applied AI fix. Recompiling…", "ok");
+  requestPdf({ download: false, quiet: false, sourceText: normalized });
+}
+
+function handleCompileFailure({ source, logText, fallbackMessage = "Compilation failed.", quiet = false }) {
+  const logSafe = String(logText || "");
+  const issue = extractPrimaryCompileIssue(logSafe, fallbackMessage);
+  const summary = formatIssueForStatus(issue);
+
+  setLog(logSafe || "No log output.");
+  setLogSummary(summary);
+  updateCompileMarkersFromLog(logSafe);
+  showLogBadge(true);
+  expandLog();
+
+  state.compileErrorContext = {
+    source: String(source || ""),
+    log: logSafe,
+    error: summary,
+  };
+
+  if (!quiet) setStatus(summary, "error");
+
+  ensureAiAvailable().then((available) => {
+    if (!available) return;
+    showAskAiButton(true);
+  });
+
+  return issue;
 }
 
 // ─── PDF Request ───
@@ -713,6 +997,9 @@ async function requestPdf({ download = false, quiet = false, sourceText = null }
     compileOverlay.hidden = false;
   }
   if (!quiet) setStatus("Compiling…", "ok");
+  if (aiPanel && !state.ai.busy) aiPanel.hidden = true;
+  if (aiApplyBtn && !state.ai.busy) aiApplyBtn.hidden = true;
+  if (!state.ai.busy) state.ai.fixedSource = "";
 
   try {
     const response = await fetch("/api/pdf", {
@@ -729,25 +1016,37 @@ async function requestPdf({ download = false, quiet = false, sourceText = null }
     if (requestId !== state.activeCompileRequestId) return;
 
     if (!response.ok || !data.ok) {
-      setStatus(data.error || "Compilation failed.", "error");
-      const logText = data.log || "No log output.";
-      setLog(logText);
-      updateCompileMarkersFromLog(logText);
-      showLogBadge(true);
-      expandLog();
+      handleCompileFailure({
+        source,
+        logText: data.log || "No log output.",
+        fallbackMessage: data.error || "Compilation failed.",
+        quiet,
+      });
       return;
     }
 
-    clearCompileMarkers();
     state.lastPdfBase64 = data.pdf_base64;
     const blob = decodePdf(data.pdf_base64);
     setPreviewBlob(blob);
 
+    const logText = data.log || "No build logs.";
+    let issue = null;
     const modeTag = data.mode === "latex" ? `LaTeX (${data.engine})` : "Text fallback";
     previewMode.textContent = modeTag;
-    setLog(data.log || "No build logs.");
-    showLogBadge(data.mode !== "latex");
-    collapseLog();
+
+    if (data.mode === "latex") {
+      setLog(logText);
+      clearCompileMarkers();
+      clearCompileErrorUi();
+      collapseLog();
+    } else {
+      issue = handleCompileFailure({
+        source,
+        logText,
+        fallbackMessage: data.message || "LaTeX compile failed.",
+        quiet,
+      });
+    }
 
     if (download) {
       const targetName = makePdfName();
@@ -761,19 +1060,23 @@ async function requestPdf({ download = false, quiet = false, sourceText = null }
         setStatus(`Exported ${modeTag}.`, data.mode === "latex" ? "ok" : "warn");
       }
     } else if (!quiet) {
-      setStatus(`Preview ready: ${modeTag}.`, data.mode === "latex" ? "ok" : "warn");
+      if (data.mode === "latex") {
+        setStatus(`Preview ready: ${modeTag}.`, "ok");
+      } else {
+        setStatus(formatIssueForStatus(issue || { message: "LaTeX compile failed.", line: 0 }), "error");
+      }
     }
   } catch (error) {
     if (requestId !== state.activeCompileRequestId) return;
-    if (!quiet) {
-      setStatus(`Error: ${error.message}`, "error");
-      setLog(String(error));
-      showLogBadge(true);
-      updateCompileMarkersFromLog(String(error));
-      expandLog();
-    }
+    const message = error && error.message ? error.message : String(error);
+    handleCompileFailure({
+      source,
+      logText: message,
+      fallbackMessage: message,
+      quiet,
+    });
   } finally {
-    if (requestId !== state.activeCompileRequestId) return;
+    // Always clean up UI — even for stale requests — so buttons never get stuck disabled
     previewBtn.disabled = false;
     savePdfBtn.disabled = false;
     compileOverlay.hidden = true;
@@ -1883,6 +2186,30 @@ function installEvents() {
 
   // Log panel
   logToggle.addEventListener("click", toggleLog);
+  if (askAiBtn) {
+    askAiBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      askAiForHelp();
+    });
+  }
+  if (aiDismissBtn) {
+    aiDismissBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (aiPanel) aiPanel.hidden = true;
+    });
+  }
+  if (aiApplyBtn) {
+    aiApplyBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      applyAiFix();
+    });
+  }
+  if (aiPanel) {
+    aiPanel.addEventListener("click", (e) => e.stopPropagation());
+  }
 
   // Keyboard shortcuts
   window.addEventListener("keydown", (e) => {
@@ -1924,8 +2251,8 @@ function installEvents() {
 function init() {
   createEditor();
   collapseLog();
-  showLogBadge(false);
   clearCompileMarkers();
+  clearCompileErrorUi();
   updateFileLabel();
   setStatus("Ready.", "ok");
   setLog("Ready.");
@@ -1937,8 +2264,7 @@ function init() {
   installPreambleToggle();
   installResizeHandle();
 
-  // Restore autosave or leave blank
-  restoreAutoSave();
+  ensureAiAvailable().then(() => showAskAiButton(false));
   loadEngineInfo();
 
   // Re-calc tab indicator after layout settles

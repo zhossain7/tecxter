@@ -27,6 +27,8 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
 
 try:
     import webview
@@ -41,6 +43,133 @@ LATEX_ENGINES = ("tectonic", "pdflatex", "xelatex", "lualatex")
 DOC_CLASS_RE = re.compile(r"\\documentclass(?:\s|\[|\{)", re.IGNORECASE)
 BEGIN_DOC_RE = re.compile(r"\\begin\s*\{\s*document\s*\}", re.IGNORECASE)
 END_DOC_RE = re.compile(r"\\end\s*\{\s*document\s*\}", re.IGNORECASE)
+
+# ─── Gemini AI Config ───
+_gemini_config: dict = {
+    "api_key": "",
+    "model": "gemini-2.0-flash",
+    "last_request_time": 0.0,
+    "rate_limit_seconds": 5.0,
+}
+
+GEMINI_SYSTEM_PROMPT = """You are an expert LaTeX debugger. The user has a LaTeX document that failed to compile.
+You will receive the LaTeX source code and the compiler error log.
+
+Your job:
+1. Identify the root cause of the error — be specific (line number, missing package, typo, etc.)
+2. Explain the error in one short paragraph a beginner would understand.
+3. Provide the COMPLETE corrected LaTeX source code that will compile successfully.
+
+Rules:
+- Only fix actual errors. Do not change content, style, or formatting unless it is the cause of the error.
+- If the error is a missing package, add the \\usepackage line in the preamble.
+- If the error is a structural issue (missing \\end, unmatched braces), fix only that.
+- Return your response in this exact format:
+
+DIAGNOSIS:
+[your explanation here]
+
+FIXED_SOURCE:
+[the complete corrected LaTeX source code here]
+"""
+
+
+def _gemini_available() -> bool:
+    return bool(_gemini_config.get("api_key", "").strip())
+
+
+def _call_gemini(source: str, log_text: str, error_text: str) -> dict:
+    if not _gemini_available():
+        return {"ok": False, "error": "AI is not configured. Start with --gemini-key."}
+
+    now = time.time()
+    elapsed = now - _gemini_config["last_request_time"]
+    if elapsed < _gemini_config["rate_limit_seconds"]:
+        wait = _gemini_config["rate_limit_seconds"] - elapsed
+        return {"ok": False, "error": f"Rate limited. Try again in {wait:.0f}s."}
+    _gemini_config["last_request_time"] = now
+
+    api_key = _gemini_config["api_key"]
+    model = _gemini_config["model"]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+    # Truncate source and log to stay within free-tier token limits
+    max_source = 8000
+    max_log = 4000
+    truncated_source = source[:max_source] + ("\n... [truncated]" if len(source) > max_source else "")
+    truncated_log = log_text[-max_log:] if len(log_text) > max_log else log_text
+
+    user_message = (
+        f"LaTeX Source Code:\n```latex\n{truncated_source}\n```\n\n"
+        f"Compiler Error Log:\n```\n{truncated_log}\n```"
+    )
+    if error_text:
+        user_message += f"\n\nError Summary: {error_text}"
+
+    payload = json.dumps({
+        "system_instruction": {"parts": [{"text": GEMINI_SYSTEM_PROMPT}]},
+        "contents": [{"parts": [{"text": user_message}]}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 8192,
+        },
+    }).encode("utf-8")
+
+    req = Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+
+    try:
+        with urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        return {"ok": False, "error": f"Gemini API error {exc.code}: {body}"}
+    except (URLError, OSError) as exc:
+        return {"ok": False, "error": f"Network error: {exc}"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Unexpected error: {exc}"}
+
+    # Parse the Gemini response
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError, TypeError):
+        return {"ok": False, "error": "Unexpected AI response format."}
+
+    # Extract DIAGNOSIS and FIXED_SOURCE sections
+    diagnosis = ""
+    fixed_source = ""
+    if "DIAGNOSIS:" in text:
+        parts = text.split("DIAGNOSIS:", 1)[1]
+        if "FIXED_SOURCE:" in parts:
+            diagnosis, rest = parts.split("FIXED_SOURCE:", 1)
+            diagnosis = diagnosis.strip()
+            # Extract code from markdown fence if present
+            fixed_source = rest.strip()
+            if fixed_source.startswith("```"):
+                # Remove opening fence
+                first_newline = fixed_source.index("\n") if "\n" in fixed_source else len(fixed_source)
+                fixed_source = fixed_source[first_newline + 1:]
+                # Remove closing fence
+                if "```" in fixed_source:
+                    fixed_source = fixed_source[:fixed_source.rindex("```")]
+            fixed_source = fixed_source.strip()
+        else:
+            diagnosis = parts.strip()
+    else:
+        diagnosis = text.strip()
+
+    suggestion = diagnosis if diagnosis else text.strip()
+    return {
+        "ok": True,
+        "suggestion": suggestion,
+        "fixed_source": fixed_source,
+        "diagnosis": diagnosis,
+        "raw": text,
+    }
 
 
 @dataclass
@@ -72,12 +201,16 @@ class LocalAppHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/engines":
             app_root = Path(self.directory).resolve() if self.directory else resolve_root()
             return self._send_json({"ok": True, "engines": discover_engines(app_root)})
+        if parsed.path == "/api/ai-status":
+            return self._send_json({"ok": True, "available": _gemini_available()})
         return super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/api/pdf":
             return self._handle_pdf()
+        if parsed.path == "/api/ai-help":
+            return self._handle_ai_help()
         self.send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
 
     def _read_json_body(self) -> dict | None:
@@ -132,6 +265,24 @@ class LocalAppHandler(SimpleHTTPRequestHandler):
             app_root=app_root,
         )
         self._send_json(result, status=200 if result.get("ok") else 400)
+
+    def _handle_ai_help(self) -> None:
+        if not _gemini_available():
+            return self._send_json({"ok": False, "error": "AI is not configured."}, status=503)
+
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        source = str(payload.get("source", ""))[:16000]
+        log_text = str(payload.get("log", ""))[:8000]
+        error_text = str(payload.get("error", ""))[:500]
+
+        if not source.strip():
+            return self._send_json({"ok": False, "error": "No source provided."}, status=400)
+
+        result = _call_gemini(source, log_text, error_text)
+        self._send_json(result, status=200 if result.get("ok") else 429 if "Rate limited" in result.get("error", "") else 500)
 
 
 class DesktopBridge:
@@ -540,7 +691,21 @@ def main() -> int:
         action="store_true",
         help="Open in the default browser instead of a native desktop window.",
     )
+    parser.add_argument(
+        "--gemini-key",
+        type=str,
+        default="",
+        help="Gemini API key for AI error diagnostics. Also reads GEMINI_API_KEY env var.",
+    )
     args = parser.parse_args()
+
+    # Configure Gemini AI
+    gemini_key = (args.gemini_key or os.environ.get("GEMINI_API_KEY", "")).strip()
+    if gemini_key:
+        _gemini_config["api_key"] = gemini_key
+        print(f"Gemini AI enabled (model: {_gemini_config['model']})")
+    else:
+        print("Gemini AI disabled (no --gemini-key or GEMINI_API_KEY).")
 
     root = resolve_root()
     entry_file = root / ENTRYPOINT

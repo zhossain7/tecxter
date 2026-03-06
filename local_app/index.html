@@ -233,9 +233,42 @@
           </svg>
           Build Log
         </h2>
-        <span class="log-badge" id="logBadge" hidden>!</span>
+        <div class="log-header-actions">
+          <span class="log-badge" id="logBadge" hidden>!</span>
+          <button id="askAiBtn" class="btn btn-ai btn-sm" type="button" hidden
+            title="Ask Gemini AI to diagnose this error">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path
+                d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
+            </svg>
+            Ask AI
+          </button>
+        </div>
       </div>
+      <div id="logSummary" class="log-summary" hidden></div>
       <pre id="logOutput" class="log-body">Ready.</pre>
+      <!-- AI Response Panel -->
+      <div id="aiPanel" class="ai-panel" hidden>
+        <div class="ai-panel-header">
+          <span class="ai-panel-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path
+                d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
+            </svg>
+            AI Diagnosis
+          </span>
+          <div class="ai-panel-actions">
+            <button id="aiApplyBtn" class="btn btn-accent btn-sm" type="button" hidden>Apply Fix</button>
+            <button id="aiDismissBtn" class="btn btn-ghost btn-sm" type="button">Dismiss</button>
+          </div>
+        </div>
+        <div id="aiContent" class="ai-content">
+          <div class="ai-loading" id="aiLoading">
+            <div class="spinner"></div>
+            <span>Asking Gemini…</span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- ─── Status Bar ─── -->
