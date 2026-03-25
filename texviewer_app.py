@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import json
+import logging
 import os
 import re
 import shutil
@@ -30,12 +32,14 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
+logger = logging.getLogger(__name__)
+
 try:
     import webview
 except ImportError:
     webview = None
 
-APP_TITLE = "TeX Studio Local"
+APP_TITLE = "Tecxter"
 ENTRYPOINT = "local_app/index.html"
 MAX_BODY_BYTES = 4 * 1024 * 1024
 LATEX_ENGINES = ("tectonic", "pdflatex", "xelatex", "lualatex")
@@ -45,12 +49,15 @@ BEGIN_DOC_RE = re.compile(r"\\begin\s*\{\s*document\s*\}", re.IGNORECASE)
 END_DOC_RE = re.compile(r"\\end\s*\{\s*document\s*\}", re.IGNORECASE)
 
 # ─── Gemini AI Config ───
-_gemini_config: dict = {
-    "api_key": "",
-    "model": "gemini-2.0-flash",
-    "last_request_time": 0.0,
-    "rate_limit_seconds": 5.0,
-}
+@dataclass
+class GeminiConfig:
+    api_key: str = ""
+    model: str = "gemini-2.0-flash"
+    last_request_time: float = 0.0
+    rate_limit_seconds: float = 5.0
+
+_gemini_config = GeminiConfig()
+_gemini_lock = threading.Lock()
 
 GEMINI_SYSTEM_PROMPT = """You are an expert LaTeX debugger. The user has a LaTeX document that failed to compile.
 You will receive the LaTeX source code and the compiler error log.
@@ -75,23 +82,26 @@ FIXED_SOURCE:
 
 
 def _gemini_available() -> bool:
-    return bool(_gemini_config.get("api_key", "").strip())
+    return bool(_gemini_config.api_key.strip())
 
 
 def _call_gemini(source: str, log_text: str, error_text: str) -> dict:
     if not _gemini_available():
         return {"ok": False, "error": "AI is not configured. Start with --gemini-key."}
 
-    now = time.time()
-    elapsed = now - _gemini_config["last_request_time"]
-    if elapsed < _gemini_config["rate_limit_seconds"]:
-        wait = _gemini_config["rate_limit_seconds"] - elapsed
-        return {"ok": False, "error": f"Rate limited. Try again in {wait:.0f}s."}
-    _gemini_config["last_request_time"] = now
+    with _gemini_lock:
+        now = time.time()
+        elapsed = now - _gemini_config.last_request_time
+        if elapsed < _gemini_config.rate_limit_seconds:
+            wait = _gemini_config.rate_limit_seconds - elapsed
+            return {"ok": False, "error": f"Rate limited. Try again in {wait:.0f}s.", "rate_limited": True}
+        _gemini_config.last_request_time = now
 
-    api_key = _gemini_config["api_key"]
-    model = _gemini_config["model"]
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    api_key = _gemini_config.api_key
+    model = _gemini_config.model
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", model):
+        return {"ok": False, "error": "Invalid model identifier."}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     # Truncate source and log to stay within free-tier token limits
     max_source = 8000
@@ -117,6 +127,7 @@ def _call_gemini(source: str, log_text: str, error_text: str) -> dict:
 
     req = Request(url, data=payload, method="POST")
     req.add_header("Content-Type", "application/json")
+    req.add_header("x-goog-api-key", api_key)
 
     try:
         with urlopen(req, timeout=15) as resp:
@@ -191,7 +202,15 @@ class LocalAppHandler(SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return
 
+    def _check_origin(self) -> bool:
+        host = self.headers.get("Host", "")
+        port = self.server.server_address[1]
+        return host in (f"127.0.0.1:{port}", f"localhost:{port}")
+
     def do_GET(self) -> None:  # noqa: N802
+        if not self._check_origin():
+            self.send_error(HTTPStatus.FORBIDDEN, "Forbidden")
+            return
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
             self.path = f"/{ENTRYPOINT}"
@@ -203,9 +222,23 @@ class LocalAppHandler(SimpleHTTPRequestHandler):
             return self._send_json({"ok": True, "engines": discover_engines(app_root)})
         if parsed.path == "/api/ai-status":
             return self._send_json({"ok": True, "available": _gemini_available()})
+        # Restrict static file serving to local_app/ only to prevent path traversal
+        app_root = Path(self.directory).resolve() if self.directory else resolve_root()
+        norm_path = parsed.path.lstrip("/")
+        target = (app_root / norm_path).resolve()
+        allowed_root = (app_root / "local_app").resolve()
+        if not (str(target) + os.sep).startswith(str(allowed_root) + os.sep):
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
         return super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._check_origin():
+            self.send_error(HTTPStatus.FORBIDDEN, "Forbidden")
+            return
+        if self.headers.get("X-Tecxter-Request") != "1":
+            self.send_error(HTTPStatus.FORBIDDEN, "Missing request header")
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/api/pdf":
             return self._handle_pdf()
@@ -253,7 +286,6 @@ class LocalAppHandler(SimpleHTTPRequestHandler):
             return
 
         source = str(payload.get("source", ""))
-        source = source if source else ""
         engine = str(payload.get("engine", "auto")).strip().lower() or "auto"
         allow_fallback = bool(payload.get("allow_text_fallback", True))
 
@@ -282,7 +314,13 @@ class LocalAppHandler(SimpleHTTPRequestHandler):
             return self._send_json({"ok": False, "error": "No source provided."}, status=400)
 
         result = _call_gemini(source, log_text, error_text)
-        self._send_json(result, status=200 if result.get("ok") else 429 if "Rate limited" in result.get("error", "") else 500)
+        if result.get("ok"):
+            status = 200
+        elif result.get("rate_limited"):
+            status = 429
+        else:
+            status = 500
+        self._send_json(result, status=status)
 
 
 class DesktopBridge:
@@ -291,7 +329,7 @@ class DesktopBridge:
     def __init__(self) -> None:
         self.window = None
 
-    def set_window(self, window) -> None:
+    def set_window(self, window: "webview.Window | None") -> None:  # type: ignore[name-defined]
         self.window = window
 
     def save_pdf_base64(self, pdf_base64: str, suggested_name: str = "document.pdf") -> dict:
@@ -306,7 +344,7 @@ class DesktopBridge:
 
         try:
             pdf_bytes = base64.b64decode(pdf_base64)
-        except Exception:
+        except (ValueError, binascii.Error):
             return {"ok": False, "error": "Invalid PDF payload."}
 
         try:
@@ -661,7 +699,7 @@ def start_local_server(root: Path) -> ThreadingHTTPServer:
 
 
 def open_in_browser(url: str) -> None:
-    webbrowser.open(url, new=1)
+    webbrowser.open(url, new=2)
 
 
 def run_gui(url: str) -> None:
@@ -685,7 +723,8 @@ def run_gui(url: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run TeX Studio Local desktop app.")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    parser = argparse.ArgumentParser(description="Run Tecxter desktop app.")
     parser.add_argument(
         "--browser",
         action="store_true",
@@ -702,15 +741,17 @@ def main() -> int:
     # Configure Gemini AI
     gemini_key = (args.gemini_key or os.environ.get("GEMINI_API_KEY", "")).strip()
     if gemini_key:
-        _gemini_config["api_key"] = gemini_key
-        print(f"Gemini AI enabled (model: {_gemini_config['model']})")
+        if args.gemini_key:
+            logger.warning("API key passed via --gemini-key is visible in process list. Prefer GEMINI_API_KEY env var.")
+        _gemini_config.api_key = gemini_key
+        logger.info("Gemini AI enabled (model: %s)", _gemini_config.model)
     else:
-        print("Gemini AI disabled (no --gemini-key or GEMINI_API_KEY).")
+        logger.info("Gemini AI disabled (no --gemini-key or GEMINI_API_KEY).")
 
     root = resolve_root()
     entry_file = root / ENTRYPOINT
     if not entry_file.exists():
-        print(f"Missing app entry file: {entry_file}")
+        logger.error("Missing app entry file: %s", entry_file)
         return 1
 
     server = start_local_server(root)
@@ -727,7 +768,7 @@ def main() -> int:
         run_gui(url)
         return 0
     except RuntimeError as exc:
-        print(str(exc))
+        logger.error("%s", exc)
         return 1
     finally:
         server.shutdown()

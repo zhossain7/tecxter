@@ -307,8 +307,6 @@ const state = {
   },
 };
 
-const AUTOSAVE_KEY = "tectex_autosave";
-const AUTOSAVE_NAME_KEY = "tectex_autosave_name";
 const LIVE_COMPILE_DELAY = 1500;
 
 // ─── CodeMirror Setup ───
@@ -385,8 +383,6 @@ function clearCompileMarkers() {
 
 
 // ─── Utility Functions ───
-function deepClone(value) { return JSON.parse(JSON.stringify(value)); }
-function deepEqual(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 
 function htmlEscape(value) {
   return String(value || "")
@@ -913,7 +909,7 @@ async function askAiForHelp() {
   try {
     const response = await fetch("/api/ai-help", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Tecxter-Request": "1" },
       body: JSON.stringify({
         source,
         log: logText,
@@ -974,7 +970,7 @@ function handleCompileFailure({ source, logText, fallbackMessage = "Compilation 
   ensureAiAvailable().then((available) => {
     if (!available) return;
     showAskAiButton(true);
-  });
+  }).catch(() => {});
 
   return issue;
 }
@@ -1004,7 +1000,7 @@ async function requestPdf({ download = false, quiet = false, sourceText = null }
   try {
     const response = await fetch("/api/pdf", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Tecxter-Request": "1" },
       body: JSON.stringify({
         source,
         engine: engineSelect.value,
@@ -1076,10 +1072,12 @@ async function requestPdf({ download = false, quiet = false, sourceText = null }
       quiet,
     });
   } finally {
-    // Always clean up UI — even for stale requests — so buttons never get stuck disabled
-    previewBtn.disabled = false;
-    savePdfBtn.disabled = false;
-    compileOverlay.hidden = true;
+    // Only clean up UI for the active request — stale requests must not re-enable buttons mid-compile
+    if (requestId === state.activeCompileRequestId) {
+      previewBtn.disabled = false;
+      savePdfBtn.disabled = false;
+      compileOverlay.hidden = true;
+    }
   }
 }
 
@@ -1688,7 +1686,7 @@ function syncBuilderToSource({ compile = false, quiet = false, moveToSource = fa
 
   if (!quiet) setStatus("Applied resume builder edits.", "ok");
   if (moveToSource) switchTab("source", { skipBuilderSync: true });
-  if (compile) requestPdf({ download: false, quiet });
+  if (compile) void requestPdf({ download: false, quiet });
   return true;
 }
 
@@ -1996,7 +1994,7 @@ function renderTemplateGrid() {
   templateGrid.innerHTML = "";
   for (const [key, tmpl] of Object.entries(TEMPLATES)) {
     templateGrid.insertAdjacentHTML("beforeend", `
-      <div class="template-card" data-template="${key}">
+      <div class="template-card" data-template="${htmlEscape(key)}">
         <div class="template-card-icon">
           <div class="template-preview">
             <div class="tp-line tp-title"></div>
@@ -2047,7 +2045,7 @@ function applyTemplate(key) {
   closeTemplateModal();
   switchTab("builder");
   updateWordCount();
-  requestPdf({ download: false, sourceText: tmpl.tex });
+  void requestPdf({ download: false, sourceText: tmpl.tex });
 }
 
 
@@ -2244,6 +2242,14 @@ function installEvents() {
       if (templateModal.classList.contains("open")) closeTemplateModal();
     }
   });
+
+  // Warn before closing with unsaved changes
+  window.addEventListener("beforeunload", (e) => {
+    if (state.dirty || state.builder.builderDirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  });
 }
 
 
@@ -2264,7 +2270,7 @@ function init() {
   installPreambleToggle();
   installResizeHandle();
 
-  ensureAiAvailable().then(() => showAskAiButton(false));
+  ensureAiAvailable().then(() => showAskAiButton(false)).catch(() => {});
   loadEngineInfo();
 
   // Re-calc tab indicator after layout settles
